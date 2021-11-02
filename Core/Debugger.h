@@ -28,6 +28,7 @@ class EventManager;
 class CallstackManager;
 class LabelManager;
 class ScriptManager;
+class ScriptingContext;
 class SpcDebugger;
 class CpuDebugger;
 class GsuDebugger;
@@ -44,6 +45,7 @@ enum class EvalResultType : int32_t;
 
 class Debugger
 {
+	friend class ScriptingContext;
 private:
 	shared_ptr<Console> _console;
 	shared_ptr<Cpu> _cpu;

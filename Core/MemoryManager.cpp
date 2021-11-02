@@ -353,6 +353,11 @@ void MemoryManager::WriteDma(uint32_t addr, uint8_t value, bool forBusA)
 	}
 }
 
+void MemoryManager::Poke(uint32_t addr, uint8_t value)
+{
+	_mappings.DebugWrite(addr, value);
+}
+
 uint8_t MemoryManager::GetOpenBus()
 {
 	return _openBus;

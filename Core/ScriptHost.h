@@ -18,6 +18,7 @@ public:
 	int GetScriptId();
 	const char* GetLog();
 
+	void AttachScript(shared_ptr<ScriptingContext>);
 	bool LoadScript(string scriptName, string scriptContent, Debugger* debugger);
 
 	void ProcessMemoryOperation(uint32_t addr, uint8_t &value, MemoryOperationType type, CpuType cpuType);

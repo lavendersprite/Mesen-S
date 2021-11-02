@@ -2,6 +2,7 @@
 #include "ScriptHost.h"
 #include "ScriptingContext.h"
 #include "EventType.h"
+
 #ifndef LIBRETRO
 #include "LuaScriptingContext.h"
 #endif
@@ -22,11 +23,17 @@ const char* ScriptHost::GetLog()
 	return context ? context->GetLog() : "";
 }
 
+void ScriptHost::AttachScript(shared_ptr<ScriptingContext> context)
+{
+	_context = context;
+}
+
 bool ScriptHost::LoadScript(string scriptName, string scriptContent, Debugger* debugger)
 {
 #ifndef LIBRETRO
-	_context.reset(new LuaScriptingContext(debugger));
-	if(!_context->LoadScript(scriptName, scriptContent, debugger)) {
+	LuaScriptingContext* context = new LuaScriptingContext(debugger);
+	_context.reset(context);
+	if(!context->LoadScript(scriptName, scriptContent, debugger)) {
 		return false;
 	}
 	return true;

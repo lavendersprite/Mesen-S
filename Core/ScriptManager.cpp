@@ -14,6 +14,18 @@ ScriptManager::ScriptManager(Debugger* debugger)
 	_nextScriptId = 1;
 }
 
+int ScriptManager::AttachScript(shared_ptr<ScriptingContext> context)
+{
+	DebugBreakHelper helper(_debugger);
+	auto lock = _scriptLock.AcquireSafe();
+	
+	shared_ptr<ScriptHost> script(new ScriptHost(_nextScriptId++));
+	script->AttachScript(context);
+	_scripts.push_back(script);
+	_hasScript = true;
+	return script->GetScriptId();
+}
+
 int ScriptManager::LoadScript(string name, string content, int32_t scriptId)
 {
 	DebugBreakHelper helper(_debugger);

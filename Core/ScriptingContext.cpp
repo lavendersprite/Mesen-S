@@ -5,8 +5,13 @@
 #include "Debugger.h"
 #include "Console.h"
 #include "SaveStateManager.h"
+#include "MemoryMappings.h"
+#include "MemoryManager.h"
+#include <set>
 
 string ScriptingContext::_log = "";
+
+#define DIRECT_ACCESS_VALUE 0xFFFFFFFF
 
 ScriptingContext::ScriptingContext(Debugger *debugger)
 {
@@ -45,8 +50,52 @@ string ScriptingContext::GetScriptName()
 
 void ScriptingContext::CallMemoryCallback(uint32_t addr, uint8_t &value, CallbackType type, CpuType cpuType)
 {
-	_inExecOpEvent = type == CallbackType::CpuExec;
-	InternalCallMemoryCallback(addr, value, type, cpuType);
+	if (_callbacks[(int)type].empty())
+	{
+		return;
+	}
+	
+	AddressInfo addrInfo = GetAddressInfo(addr);
+	
+	// references already visited; we shouldn't invoke multiple times.
+	std::set<int> visited;
+	
+	for (MemoryCallback& callback : _callbacks[(int)type])
+	{
+		if (callback.Type != cpuType) continue;
+		
+		bool shouldVisit = false;
+		if (callback.RequestedStartAddr <= addr && addr < callback.RequestedEndAddr)
+		{
+			shouldVisit = true;
+		}
+		else if (callback.MemoryType == addrInfo.Type && (int)callback.StartAddress <= addrInfo.Address && addrInfo.Address < (int)callback.EndAddress)
+		{
+			shouldVisit = true;
+		}
+	
+		if (shouldVisit)
+		{
+			if (!callback.multiReference)
+			{
+				if (visited.find(callback.Reference) != visited.end())
+				{
+					// we've already visited this reference.
+					continue;
+				}
+				else
+				{
+					// make a note not to visit this reference again.
+					visited.emplace(callback.Reference);
+				}
+			}
+			
+			// run the callback.
+			_inExecOpEvent = type == CallbackType::CpuExec;
+			InternalCallMemoryCallback(addr, value, type, callback);
+		}
+	}
+	
 	_inExecOpEvent = false;
 }
 
@@ -81,7 +130,7 @@ bool ScriptingContext::CheckStateLoadedFlag()
 	return stateLoaded;
 }
 
-void ScriptingContext::RegisterMemoryCallback(CallbackType type, int startAddr, int endAddr, CpuType cpuType, int reference)
+void ScriptingContext::RegisterMemoryCallback(CallbackType type, int startAddr, int endAddr, CpuType cpuType, int reference, bool directOnly)
 {
 	if(endAddr < startAddr) {
 		return;
@@ -90,16 +139,57 @@ void ScriptingContext::RegisterMemoryCallback(CallbackType type, int startAddr, 
 	if(startAddr == 0 && endAddr == 0) {
 		endAddr = 0xFFFFFF;
 	}
-
-	MemoryCallback callback;
-	callback.StartAddress = (uint32_t)startAddr;
-	callback.EndAddress = (uint32_t)endAddr;
-	callback.Reference = reference;
-	callback.Type = cpuType;
-	_callbacks[(int)type].push_back(callback);
+	
+	// add a direct memory callback; this will always fire if the memory address is accessed directly.
+	{
+		MemoryCallback callback;
+		callback.StartAddress = (uint32_t)startAddr;
+		callback.EndAddress = (uint32_t)endAddr;
+		callback.RequestedStartAddr = startAddr;
+		callback.RequestedEndAddr = endAddr;
+		callback.DirectAccess = DIRECT_ACCESS_VALUE;
+		callback.Type = cpuType;
+		callback.Reference = reference;
+		callback.multiReference = directOnly;
+		_callbacks[(int)type].push_back(callback);
+	}
+	
+	if (!directOnly)
+	{
+		// sometimes the memory can be accessed indirectly. So we place watchpoints at the mapped region.
+		// Because one memory callback cannot straddle the boundary of a memory region, we have to 
+		// split at each boundary point.
+		MemoryMappings* const memoryMap = _debugger->GetConsole()->GetMemoryManager()->GetMemoryMappings();
+		AddressInfo startAddrInfo = memoryMap->GetAbsoluteAddress(startAddr);
+		for (int addr = startAddr + 1; addr <= endAddr; ++addr)
+		{
+			if (addr == endAddr || memoryMap->GetAbsoluteAddress(addr).Type != startAddrInfo.Type)
+			{
+				if (startAddrInfo.Address >= 0)
+				{
+					MemoryCallback callback;
+					callback.StartAddress = (uint32_t)startAddrInfo.Address;
+					callback.EndAddress = (uint32_t)memoryMap->GetAbsoluteAddress(addr - 1).Address + 1;
+					callback.MemoryType = startAddrInfo.Type;
+					callback.Reference = reference;
+					callback.Type = cpuType;
+					callback.RequestedStartAddr = startAddr;
+					callback.RequestedEndAddr = endAddr;
+					callback.multiReference = directOnly;
+					_callbacks[(int)type].push_back(callback);
+				}
+				
+				if (addr != endAddr)
+				// set new start-of-region boundary for next iterations.
+				{
+					startAddrInfo = memoryMap->GetAbsoluteAddress(addr);
+				}
+			}
+		}
+	}
 }
 
-void ScriptingContext::UnregisterMemoryCallback(CallbackType type, int startAddr, int endAddr, CpuType cpuType, int reference)
+void ScriptingContext::UnregisterMemoryCallback(CallbackType type, int startAddr, int endAddr, CpuType cpuType, int reference, bool directOnly)
 {
 	if(endAddr < startAddr) {
 		return;
@@ -111,9 +201,12 @@ void ScriptingContext::UnregisterMemoryCallback(CallbackType type, int startAddr
 
 	for(size_t i = 0; i < _callbacks[(int)type].size(); i++) {
 		MemoryCallback &callback = _callbacks[(int)type][i];
-		if(callback.Reference == reference && callback.Type == cpuType && (int)callback.StartAddress == startAddr && (int)callback.EndAddress == endAddr) {
+		
+		// remove reference.
+		if (callback.Reference == reference && callback.Type == cpuType && (int)callback.RequestedStartAddr == startAddr && (int)callback.RequestedEndAddr == endAddr) {
 			_callbacks[(int)type].erase(_callbacks[(int)type].begin() + i);
-			break;
+			
+			if (directOnly) break;
 		}
 	}
 }
@@ -211,4 +304,9 @@ void ScriptingContext::ClearSavestateData(int slot)
 	if(slot >= 0) {
 		_saveSlotData.erase(slot);
 	}
+}
+
+inline AddressInfo ScriptingContext::GetAddressInfo(uint32_t addr)
+{
+	return _debugger->GetConsole()->GetMemoryManager()->GetMemoryMappings()->GetAbsoluteAddress(addr);
 }

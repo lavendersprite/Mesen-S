@@ -1,13 +1,16 @@
 #include <string>
 #include <sstream>
 #include <algorithm>
+#include "hcdebug.h"
 #include "LibretroRenderer.h"
 #include "LibretroSoundManager.h"
 #include "LibretroKeyManager.h"
 #include "LibretroMessageManager.h"
 #include "libretro.h"
+#include "hcdebug.h"
 #include "../Core/Console.h"
 #include "../Core/Spc.h"
+#include "../Core/Cpu.h"
 #include "../Core/Gameboy.h"
 #include "../Core/BaseCartridge.h"
 #include "../Core/MemoryManager.h"
@@ -15,6 +18,9 @@
 #include "../Core/VideoRenderer.h"
 #include "../Core/EmuSettings.h"
 #include "../Core/SaveStateManager.h"
+#include "../Core/ScriptingContext.h"
+#include "../Core/Debugger.h"
+#include "../Core/ScriptManager.h"
 #include "../Core/CheatManager.h"
 #include "../Core/SettingTypes.h"
 #include "../Utilities/snes_ntsc.h"
@@ -108,6 +114,17 @@ extern "C" {
 		_console->Release();
 		_console.reset();
 	}
+	
+	static RETRO_CALLCONV void* hc_set_debugger(hc_DebuggerIf* const);
+	static RETRO_CALLCONV retro_proc_address_t get_proc_address(const char* sym)
+	{
+		if (!strcmp(sym, "hc_set_debuggger") || !strcmp(sym, "hc_set_debugger"))
+		{
+			return (retro_proc_address_t)hc_set_debugger;
+		}
+		
+		return nullptr;
+	}
 
 	RETRO_API void retro_set_environment(retro_environment_t env)
 	{
@@ -173,6 +190,8 @@ extern "C" {
 
 		retroEnv(RETRO_ENVIRONMENT_SET_VARIABLES, (void*)vars);
 		retroEnv(RETRO_ENVIRONMENT_SET_CONTROLLER_INFO, (void*)ports);
+		retro_get_proc_address_interface get_proc{ get_proc_address };
+		retroEnv(RETRO_ENVIRONMENT_SET_PROC_ADDRESS_CALLBACK, (void*)&get_proc);
 	}
 
 	RETRO_API void retro_set_video_refresh(retro_video_refresh_t sendFrame)
@@ -767,4 +786,300 @@ extern "C" {
 		}
 		return 0;
 	}
+}
+
+// hcdebug implementation -------------------------------------------------------------------------------
+
+static hc_DebuggerIf* debugger = nullptr;
+
+class HCDebugContext : public ScriptingContext
+{
+public:
+	HCDebugContext(Debugger* d)
+		: ScriptingContext(d)
+	{}
+protected:
+	void InternalCallMemoryCallback(uint32_t addr, uint8_t& value, CallbackType type, MemoryCallback& cb) override
+	{
+		if (debugger->v1.breakpoint_cb)
+		{
+			debugger->v1.breakpoint_cb(cb.Reference);
+		}
+	}
+	
+	int InternalCallEventCallback(EventType type) override
+	{
+		return 0;
+	}
+
+public:
+	uint64_t GetRegister(unsigned reg)
+	{
+		CpuState state = _console->GetCpu()->GetState();
+		switch (reg)
+		{
+		case HC_65816_A:
+			return state.A;
+		case HC_65816_X:
+			return state.X;
+		case HC_65816_Y:
+			return state.Y;
+		case HC_65816_S:
+			return state.SP;
+		case HC_65816_PC:
+			return state.PC;
+		case HC_65816_P:
+			return state.PS;
+		case HC_65816_DB:
+			return state.DBR;
+		case HC_65816_D:
+			return state.D;
+		case HC_65816_EMU:
+			return state.EmulationMode;
+		default:
+			return 0;
+		}
+	}
+	
+	void SetRegister(unsigned reg, uint64_t value)
+	{
+		Cpu* cpu = _console->GetCpu().get();
+		CpuState state = cpu->GetState();
+		switch (reg)
+		{
+		case HC_65816_A:
+			state.A = value;
+			break;
+		case HC_65816_X:
+			state.X = value;
+			break;
+		case HC_65816_Y:
+			state.Y = value;
+			break;
+		case HC_65816_S:
+			state.SP = value;
+			break;
+		case HC_65816_PC:
+			state.PC = value;
+			break;
+		case HC_65816_P:
+			state.PS = value;
+			break;
+		case HC_65816_DB:
+			state.DBR = value;
+			break;
+		case HC_65816_D:
+			state.D = value;
+			break;
+		case HC_65816_EMU:
+			state.EmulationMode = !!value;
+			break;
+		}
+		cpu->SetState(state);
+	}
+	
+	uint8_t peek(uint64_t address)
+	{
+		return _console->GetMemoryManager()->Peek(address);
+	}
+	
+	CpuType GetMainCPUType()
+	{
+		if (_console->GetSettings()->CheckFlag(EmulationFlags::GameboyMode))
+		{
+			return CpuType::Gameboy;
+		}
+		else
+		{
+			return CpuType::Cpu;
+		}
+	}
+	
+	void poke(uint64_t address, uint8_t value)
+	{
+		_console->GetMemoryManager()->Poke(address, value);
+	}
+	
+	void step()
+	{
+		GetDebugger()->Step(
+			GetMainCPUType(),
+			1,
+			StepType::Step
+		);
+	}
+	
+	void step_over()
+	{
+		GetDebugger()->Step(
+			GetMainCPUType(),
+			1,
+			StepType::StepOver
+		);
+	}
+	
+	void step_out()
+	{
+		GetDebugger()->Step(
+			GetMainCPUType(),
+			1,
+			StepType::StepOut
+		);
+	}
+};
+
+static HCDebugContext& get_scripting_context()
+{
+	static shared_ptr<HCDebugContext> context;
+	if (context) return *context;
+	shared_ptr<Debugger> debugger = _console->GetDebugger();
+	context.reset(new HCDebugContext(debugger.get()));
+	debugger->GetScriptManager()->AttachScript(context);
+	return *context;
+}
+
+static unsigned breakpoint_id = 1;
+
+static hc_Memory main_memory = {
+	/* id, description*/
+	"cpu", "Main",
+	/* alignment, base_address, size */
+	1, 0, 0x1000000,
+	
+	/* peek */
+	[](void*, uint64_t address) -> uint8_t {
+		return get_scripting_context().peek(address);
+	},
+	
+	/* poke */
+	[](void*, uint64_t address, uint8_t value) {
+		get_scripting_context().poke(address, value);
+	},
+	
+	// set_watchpoint
+	[](void*, uint64_t address, uint64_t length, int read, int write) -> unsigned{
+		HCDebugContext& context = get_scripting_context();
+		unsigned _breakpoint_id = (read || write) ? breakpoint_id++ : 0;
+		if (read)  context.RegisterMemoryCallback  (CallbackType::CpuRead, address, address + length, context.GetMainCPUType(), _breakpoint_id, false);
+		if (write) context.RegisterMemoryCallback  (CallbackType::CpuWrite, address, address + length, context.GetMainCPUType(), _breakpoint_id, false);
+		return 1;
+	},
+	
+	// breakpoints, num_breakpoints
+	nullptr, 0
+};
+
+static hc_Memory prg_rom = {
+	"rom", "prg ROM",
+	1, 0, 0,
+	
+	/* peek */
+	[](void*, uint64_t address) -> uint8_t {
+		uint8_t* data = _console->GetCartridge()->DebugGetPrgRom();
+		return (data && address < _console->GetCartridge()->DebugGetPrgRomSize())
+			? *(data + address)
+			: 0;
+	},
+	
+	/* poke */
+	[](void*, uint64_t address, uint8_t value) -> void {
+		uint8_t* data = _console->GetCartridge()->DebugGetPrgRom();
+		if (data && address < _console->GetCartridge()->DebugGetPrgRomSize())
+		{
+			*(data + address) = value;
+		}
+	},
+	
+	/* set_watchpoint */
+	nullptr,
+	
+	/* breakpoints, num_breakpoints */
+	nullptr, 0
+};
+
+static hc_Cpu cpu = {
+	/* description, type, is_main */
+	"Main CPU", HC_CPU_65816, 1,
+	/* memory_region */
+	&main_memory,
+	/* get_register */
+	[](void* ud, unsigned reg) -> uint64_t {
+		return get_scripting_context().GetRegister(reg);
+	},
+	/* set_register */
+	[](void* ud, unsigned reg, uint64_t value) -> void {
+		get_scripting_context().SetRegister(reg, value);
+	},
+	/* set_reg_breakpoint */
+	nullptr,
+	/* step_into */
+	[](void* ud) -> void {
+		get_scripting_context().step();
+	},
+	/* step_over */
+	[](void* ud) -> void {
+		get_scripting_context().step_over();
+	},
+	/* step_out */
+	[](void* ud) -> void {
+		get_scripting_context().step_out();
+	},
+	/* set_exec_breakpoint */
+	[](void* ud, uint64_t address) -> unsigned {
+		HCDebugContext& context = get_scripting_context();
+		unsigned _breakpoint_id = breakpoint_id++;
+		context.RegisterMemoryCallback(CallbackType::CpuExec, address, address + 1, context.GetMainCPUType(), _breakpoint_id, false);
+		return _breakpoint_id;
+	},
+	/* set_io_watchpoint, set_int_breakpoint */
+	nullptr, nullptr,
+	/* break_points, num_break_points */
+	nullptr, 0
+};
+
+static hc_Cpu const* cpus[] = {
+	&cpu
+};
+
+static hc_Memory const* system_memory[] = {
+	&prg_rom
+};
+
+static hc_System mesens_system = {
+	/* description */
+	"SNES",
+	/* cpus, num_cpus */
+	cpus, sizeof(cpus) / sizeof(cpus[0]),
+	/* memory_regions, num_memory_regions */
+	system_memory, 1,
+	/* break_points, num_break_points */
+	nullptr, 0
+};
+
+// set hc debug fields that depend on the content loaded
+static void hc_initialize_content()
+{
+	if (_console->GetSettings()->CheckFlag(EmulationFlags::GameboyMode))
+	{
+		mesens_system.v1.description = "GB";
+		main_memory.v1.size = 0x10000;
+	}
+	else
+	{
+		mesens_system.v1.description = "SNES";
+		main_memory.v1.size = 0x1000000;
+		cpu.v1.type = HC_CPU_65816;
+	}
+	
+	prg_rom.v1.size = _console->GetCartridge()->DebugGetPrgRomSize();
+}
+
+static RETRO_CALLCONV void* hc_set_debugger(hc_DebuggerIf* const debugger_if) {
+	debugger = debugger_if;
+	debugger_if->core_api_version = HC_API_VERSION;
+	debugger_if->v1.system = &mesens_system;
+	
+	hc_initialize_content();
+	
+	return (void*)&mesens_system;
 }

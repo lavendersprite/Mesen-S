@@ -107,35 +107,25 @@ void LuaScriptingContext::UnregisterEventCallback(EventType type, int reference)
 	luaL_unref(_lua, LUA_REGISTRYINDEX, reference);
 }
 
-void LuaScriptingContext::InternalCallMemoryCallback(uint32_t addr, uint8_t &value, CallbackType type, CpuType cpuType)
+void LuaScriptingContext::InternalCallMemoryCallback(uint32_t addr, uint8_t &value, CallbackType type, MemoryCallback& callback)
 {
-	if(_callbacks[(int)type].empty()) {
-		return;
-	}
-
 	_timer.Reset();
 	_context = this;
 	lua_sethook(_lua, LuaScriptingContext::ExecutionCountHook, LUA_MASKCOUNT, 1000); 
 	LuaApi::SetContext(this);
-	for(MemoryCallback &callback: _callbacks[(int)type]) {
-		if(callback.Type != cpuType || addr < callback.StartAddress || addr > callback.EndAddress) {
-			continue;
+	int top = lua_gettop(_lua);
+	lua_rawgeti(_lua, LUA_REGISTRYINDEX, callback.Reference);
+	lua_pushinteger(_lua, addr);
+	lua_pushinteger(_lua, value);
+	if(lua_pcall(_lua, 2, LUA_MULTRET, 0) != 0) {
+		Log(lua_tostring(_lua, -1));
+	} else {
+		int returnParamCount = lua_gettop(_lua) - top;
+		if(returnParamCount && lua_isinteger(_lua, -1)) {
+			int newValue = (int)lua_tointeger(_lua, -1);
+			value = (uint8_t)newValue;
 		}
-
-		int top = lua_gettop(_lua);
-		lua_rawgeti(_lua, LUA_REGISTRYINDEX, callback.Reference);
-		lua_pushinteger(_lua, addr);
-		lua_pushinteger(_lua, value);
-		if(lua_pcall(_lua, 2, LUA_MULTRET, 0) != 0) {
-			Log(lua_tostring(_lua, -1));
-		} else {
-			int returnParamCount = lua_gettop(_lua) - top;
-			if(returnParamCount && lua_isinteger(_lua, -1)) {
-				int newValue = (int)lua_tointeger(_lua, -1);
-				value = (uint8_t)newValue;
-			}
-			lua_settop(_lua, top);
-		}
+		lua_settop(_lua, top);
 	}
 }
 

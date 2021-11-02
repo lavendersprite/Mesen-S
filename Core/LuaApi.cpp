@@ -320,7 +320,7 @@ int LuaApi::RegisterMemoryCallback(lua_State *lua)
 	errorCond(callbackType < CallbackType::CpuRead || callbackType > CallbackType::CpuExec, "the specified type is invalid");
 	errorCond(cpuType < CpuType::Cpu || cpuType > CpuType::Gameboy, "the cpu type is invalid");
 	errorCond(reference == LUA_NOREF, "the specified function could not be found");
-	_context->RegisterMemoryCallback(callbackType, startAddr, endAddr, cpuType, reference);
+	_context->RegisterMemoryCallback(callbackType, startAddr, endAddr + 1, cpuType, reference);
 	_context->Log("Registered memory callback from $" + HexUtilities::ToHex((uint32_t)startAddr) + " to $" + HexUtilities::ToHex((uint32_t)endAddr));
 	l.Return(reference);
 	return l.ReturnCount();
@@ -346,7 +346,7 @@ int LuaApi::UnregisterMemoryCallback(lua_State *lua)
 	errorCond(startAddr > endAddr, "start address must be <= end address");
 	errorCond(type < CallbackType::CpuRead || type > CallbackType::CpuExec, "the specified type is invalid");
 	errorCond(reference == LUA_NOREF, "function reference is invalid");
-	_context->UnregisterMemoryCallback(type, startAddr, endAddr, cpuType, reference);
+	_context->UnregisterMemoryCallback(type, startAddr, endAddr + 1, cpuType, reference);
 	return l.ReturnCount();
 }
 

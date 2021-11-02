@@ -84,6 +84,8 @@ public:
 
 	void Write(uint32_t addr, uint8_t value, MemoryOperationType type);
 	void WriteDma(uint32_t addr, uint8_t value, bool forBusA);
+	
+	void Poke(uint32_t addr, uint8_t value);
 
 	uint8_t GetOpenBus();
 	uint64_t GetMasterClock();

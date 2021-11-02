@@ -1,3 +1,4 @@
+
 #if (defined(DUMMYCPU) && !defined(__DUMMYCPU__H)) || (!defined(DUMMYCPU) && !defined(__CPU__H))
 #ifdef DUMMYCPU
 #define __DUMMYCPU__H
@@ -331,6 +332,10 @@ public:
 
 	CpuState GetState();
 	uint64_t GetCycleCount();
+	void SetState(CpuState& state)
+	{
+		_state = state;
+	}
 
 	template<uint64_t value>
 	void IncreaseCycleCount();
