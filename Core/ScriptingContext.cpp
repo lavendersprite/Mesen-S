@@ -152,6 +152,11 @@ void ScriptingContext::RegisterMemoryCallback(CallbackType type, int startAddr, 
 		callback.Reference = reference;
 		callback.multiReference = directOnly;
 		_callbacks[(int)type].push_back(callback);
+		
+		for (uint32_t addr = callback.StartAddress; addr < callback.EndAddress; ++addr)
+		{
+			_debugger->WatchMemory(addr);
+		}
 	}
 	
 	if (!directOnly)
@@ -177,6 +182,11 @@ void ScriptingContext::RegisterMemoryCallback(CallbackType type, int startAddr, 
 					callback.RequestedEndAddr = endAddr;
 					callback.multiReference = directOnly;
 					_callbacks[(int)type].push_back(callback);
+					
+					for (uint32_t addr = callback.StartAddress; addr < callback.EndAddress; ++addr)
+					{
+						_debugger->WatchMemory(addr);
+					}
 				}
 				
 				if (addr != endAddr)
@@ -204,6 +214,12 @@ void ScriptingContext::UnregisterMemoryCallback(CallbackType type, int startAddr
 		
 		// remove reference.
 		if (callback.Reference == reference && callback.Type == cpuType && (int)callback.RequestedStartAddr == startAddr && (int)callback.RequestedEndAddr == endAddr) {
+			
+			for (uint32_t addr = callback.StartAddress; addr < callback.EndAddress; ++addr)
+			{
+				_debugger->UnwatchMemory(addr);
+			}
+			
 			_callbacks[(int)type].erase(_callbacks[(int)type].begin() + i);
 			
 			if (directOnly) break;

@@ -79,6 +79,7 @@ Debugger::Debugger(shared_ptr<Console> console)
 	_memoryAccessCounter.reset(new MemoryAccessCounter(this, console.get()));
 	_ppuTools.reset(new PpuTools(_console.get(), _ppu.get()));
 	_scriptManager.reset(new ScriptManager(this));
+	memset(_memoryWatched, 0, sizeof(_memoryWatched));
 
 	if(_gameboy) {
 		_gbDebugger.reset(new GbDebugger(this));
@@ -140,6 +141,7 @@ void Debugger::Reset()
 template<CpuType type>
 void Debugger::ProcessMemoryRead(uint32_t addr, uint8_t value, MemoryOperationType opType)
 {
+	#ifndef LIBRETRO
 	switch(type) {
 		case CpuType::Cpu: _cpuDebugger->ProcessRead(addr, value, opType); break;
 		case CpuType::Spc: _spcDebugger->ProcessRead(addr, value, opType); break;
@@ -149,8 +151,9 @@ void Debugger::ProcessMemoryRead(uint32_t addr, uint8_t value, MemoryOperationTy
 		case CpuType::Cx4: _cx4Debugger->ProcessRead(addr, value, opType); break;
 		case CpuType::Gameboy: _gbDebugger->ProcessRead(addr, value, opType); break;
 	}
+	#endif
 	
-	if(_scriptManager->HasScript()) {
+	if(_memoryWatched[addr & 0xFFFF]) {
 		_scriptManager->ProcessMemoryOperation(addr, value, opType, type);
 	}
 }
@@ -158,6 +161,7 @@ void Debugger::ProcessMemoryRead(uint32_t addr, uint8_t value, MemoryOperationTy
 template<CpuType type>
 void Debugger::ProcessMemoryWrite(uint32_t addr, uint8_t value, MemoryOperationType opType)
 {
+	#ifndef LIBRETRO
 	switch(type) {
 		case CpuType::Cpu: _cpuDebugger->ProcessWrite(addr, value, opType); break;
 		case CpuType::Spc: _spcDebugger->ProcessWrite(addr, value, opType); break;
@@ -167,8 +171,9 @@ void Debugger::ProcessMemoryWrite(uint32_t addr, uint8_t value, MemoryOperationT
 		case CpuType::Cx4: _cx4Debugger->ProcessWrite(addr, value, opType); break;
 		case CpuType::Gameboy: _gbDebugger->ProcessWrite(addr, value, opType); break;
 	}
+	#endif
 	
-	if(_scriptManager->HasScript()) {
+	if(_memoryWatched[addr & 0xFFFF]) {
 		_scriptManager->ProcessMemoryOperation(addr, value, opType, type);
 	}
 }
@@ -178,8 +183,10 @@ void Debugger::ProcessWorkRamRead(uint32_t addr, uint8_t value)
 	AddressInfo addressInfo { (int32_t)addr, SnesMemoryType::WorkRam };
 	_memoryAccessCounter->ProcessMemoryRead(addressInfo, _memoryManager->GetMasterClock());
 	
+	#ifndef LIBRETRO
 	MemoryOperationInfo operation { 0x7E0000 | addr, value, MemoryOperationType::Read };
 	ProcessBreakConditions(false, _cpuDebugger->GetBreakpointManager(), operation, addressInfo);
+	#endif
 }
 
 void Debugger::ProcessWorkRamWrite(uint32_t addr, uint8_t value)
@@ -187,12 +194,15 @@ void Debugger::ProcessWorkRamWrite(uint32_t addr, uint8_t value)
 	AddressInfo addressInfo { (int32_t)addr, SnesMemoryType::WorkRam };
 	_memoryAccessCounter->ProcessMemoryWrite(addressInfo, _memoryManager->GetMasterClock());
 	
+	#ifndef LIBRETRO
 	MemoryOperationInfo operation { 0x7E0000 | addr, value, MemoryOperationType::Write };
 	ProcessBreakConditions(false, _cpuDebugger->GetBreakpointManager(), operation, addressInfo);
+	#endif
 }
 
 void Debugger::ProcessPpuRead(uint16_t addr, uint8_t value, SnesMemoryType memoryType)
 {
+	#ifndef LIBRETRO
 	AddressInfo addressInfo { addr, memoryType };
 	MemoryOperationInfo operation { addr, value, MemoryOperationType::Read };
 	
@@ -200,10 +210,12 @@ void Debugger::ProcessPpuRead(uint16_t addr, uint8_t value, SnesMemoryType memor
 	ProcessBreakConditions(false, bpManager, operation, addressInfo);
 
 	_memoryAccessCounter->ProcessMemoryRead(addressInfo, _console->GetMasterClock());
+	#endif
 }
 
 void Debugger::ProcessPpuWrite(uint16_t addr, uint8_t value, SnesMemoryType memoryType)
 {
+	#ifndef LIBRETRO
 	AddressInfo addressInfo { addr, memoryType };
 	MemoryOperationInfo operation { addr, value, MemoryOperationType::Write };
 	
@@ -211,11 +223,13 @@ void Debugger::ProcessPpuWrite(uint16_t addr, uint8_t value, SnesMemoryType memo
 	ProcessBreakConditions(false, bpManager, operation, addressInfo);
 
 	_memoryAccessCounter->ProcessMemoryWrite(addressInfo, _console->GetMasterClock());
+	#endif
 }
 
 template<CpuType cpuType>
 void Debugger::ProcessPpuCycle()
 {
+	#ifndef LIBRETRO
 	uint16_t scanline;
 	uint16_t cycle;
 	if(cpuType == CpuType::Gameboy) {
@@ -248,6 +262,7 @@ void Debugger::ProcessPpuCycle()
 	if(_breakRequestCount > 0) {
 		SleepUntilResume(BreakSource::Unspecified);
 	}
+	#endif
 }
 
 void Debugger::SleepUntilResume(BreakSource source, MemoryOperationInfo *operation, int breakpointId)
@@ -350,6 +365,16 @@ void Debugger::ProcessEvent(EventType type)
 			_memoryAccessCounter->ResetCounts();
 			break;
 	}
+}
+
+void Debugger::WatchMemory(uint16_t addr)
+{
+	_memoryWatched[(int)addr]++;
+}
+
+void Debugger::UnwatchMemory(uint16_t addr)
+{
+	_memoryWatched[(int)addr]--;
 }
 
 int32_t Debugger::EvaluateExpression(string expression, CpuType cpuType, EvalResultType &resultType, bool useCache)

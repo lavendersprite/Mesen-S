@@ -84,6 +84,8 @@ private:
 	atomic<bool> _executionStopped;
 	atomic<uint32_t> _breakRequestCount;
 	atomic<uint32_t> _suspendRequestCount;
+	
+	uint32_t _memoryWatched[0x10000]; // stores number of times memory address is watched (for scripts).
 
 	bool _waitForBreakResume = false;
 	
@@ -113,6 +115,10 @@ public:
 	void ProcessInterrupt(uint32_t originalPc, uint32_t currentPc, bool forNmi);
 
 	void ProcessEvent(EventType type);
+	
+	// scripts can enable watching an address
+	void WatchMemory(uint16_t);
+	void UnwatchMemory(uint16_t);
 
 	int32_t EvaluateExpression(string expression, CpuType cpuType, EvalResultType &resultType, bool useCache);
 
